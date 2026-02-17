@@ -257,5 +257,5 @@ Full Stack Developer | Cloud Enthusiast | Distributed Systems Learner
 
 ## System Architecture Diagram
 
-![System design](./system-design.png)
+![System design](./systemDesign.png)
 
