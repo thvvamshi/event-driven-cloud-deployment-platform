@@ -7,15 +7,6 @@ const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const mime = require("mime-types");
 const { Kafka, Partitioners } = require("kafkajs");
 
-// S3 CLIENT
-const s3client = new S3Client({
-  region: "ap-south-1",
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
-
 // ENV
 const PROJECT_ID = process.env.PROJECT_ID;
 const DEPLOYMENT_ID = process.env.DEPLOYMENT_ID;
@@ -25,6 +16,22 @@ if (!PROJECT_ID || !DEPLOYMENT_ID || !GIT_REPO_URL) {
   console.error("Missing required environment variables");
   process.exit(1);
 }
+
+// VALIDATE GIT REPO URL
+const allowedRepo = /^https:\/\/github\.com\/[\w-]+\/[\w-]+(\.git)?$/;
+if (!allowedRepo.test(GIT_REPO_URL)) {
+  console.error("Invalid GitHub repository URL");
+  process.exit(1);
+}
+
+// S3 CLIENT
+const s3client = new S3Client({
+  region: "ap-south-1",
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
 
 // KAFKA CLIENT
 const kafka = new Kafka({
@@ -98,7 +105,7 @@ async function uploadFolder(folderPath) {
 
     const command = new PutObjectCommand({
       Bucket: "vercel-deployment-services",
-      Key: `__output/${PROJECT_ID}/${file}`,
+      Key: `__output/${PROJECT_ID}/${file.replace(/\\/g, "/")}`,
       Body: fs.createReadStream(filePath),
       ContentType: mime.lookup(filePath) || "application/octet-stream",
     });
@@ -132,6 +139,7 @@ async function init() {
 
     const projectRoot = findProjectRoot(outputPath);
 
+    // STATIC PROJECT (no package.json)
     if (!projectRoot) {
       const indexPath = path.join(outputPath, "index.html");
 
@@ -151,9 +159,9 @@ async function init() {
 
     await publishLog(`Project root detected at ${projectRoot}`);
 
-    const buildProcess = exec(
-      `cd ${projectRoot} && npm install && npm run build`,
-    );
+    const buildProcess = exec("npm install && npm run build", {
+      cwd: projectRoot,
+    });
 
     buildProcess.stdout.on("data", async (data) => {
       await publishLog(data.toString());
@@ -172,21 +180,42 @@ async function init() {
 
       await publishLog("Build completed successfully");
 
-      const distPath = path.join(projectRoot, "dist");
+      // 🔥 MULTI-FRAMEWORK OUTPUT SUPPORT
+      const possibleOutputs = ["dist", "build", "out"];
+      let outputFolder = null;
 
-      if (!fs.existsSync(distPath)) {
-        await publishLog("dist folder not found after build");
+      for (const folder of possibleOutputs) {
+        const fullPath = path.join(projectRoot, folder);
+        if (fs.existsSync(fullPath)) {
+          outputFolder = fullPath;
+          break;
+        }
+      }
+
+      // Angular case: dist/<project-name>/
+      if (!outputFolder) {
+        const distPath = path.join(projectRoot, "dist");
+        if (fs.existsSync(distPath)) {
+          const subFolders = fs.readdirSync(distPath, { withFileTypes: true });
+          const folder = subFolders.find((f) => f.isDirectory());
+          if (folder) {
+            outputFolder = path.join(distPath, folder.name);
+          }
+        }
+      }
+
+      if (!outputFolder) {
+        await publishLog("No valid build output folder found (dist/build/out)");
         await producer.disconnect();
         process.exit(1);
       }
 
-      await uploadFolder(distPath);
+      await publishLog(`Uploading from ${outputFolder}`);
+      await uploadFolder(outputFolder);
 
       await publishLog("🎉 Deployment Successful");
 
-      // VERY IMPORTANT
       await producer.disconnect();
-
       process.exit(0);
     });
   } catch (err) {
