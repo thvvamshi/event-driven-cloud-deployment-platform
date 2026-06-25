@@ -251,10 +251,6 @@ node index.js
 
 ---
 
-**Author:** Vamshi Kumar  
-Full Stack Developer | Cloud Enthusiast | Distributed Systems Learner
-
-
 ## System Architecture Diagram
 
 ![System design](./systemDesign.png)
